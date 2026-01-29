@@ -1,0 +1,4 @@
+DeepVirFinder/
+*/.git/
+__pycache__/
+*.pyc
