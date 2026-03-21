@@ -1,3 +1,9 @@
+<<<<<<< HEAD
+DeepVirFinder/
+*/.git/
+__pycache__/
+*.pyc
+=======
 # Python
 __pycache__/
 *.py[cod]
@@ -56,3 +62,4 @@ Thumbs.db
 *.bak
 *.tmp
 *.temp
+>>>>>>> 671e7c3c0df8ba4ac19413ab11f591279f97b037
