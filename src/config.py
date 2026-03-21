@@ -19,7 +19,8 @@ DATA_DIR = {
 RESULTS_DIR = {
     'models': os.path.join(PROJECT_ROOT, 'results', 'models'),
     'figures': os.path.join(PROJECT_ROOT, 'results', 'figures'),
-    'tables': os.path.join(PROJECT_ROOT, 'results', 'tables')
+    'tables': os.path.join(PROJECT_ROOT, 'results', 'tables'),
+    'reports': os.path.join(PROJECT_ROOT, 'results', 'reports')
 }
 
 # 源代码目录

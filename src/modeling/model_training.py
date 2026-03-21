@@ -434,6 +434,11 @@ def train_classification_model(input_df=None, models_to_train=None, balance_data
         print(f"非活性化合物数: {sum(1 - y)}")
         print(f"类不平衡比例: {sum(y) / len(y):.2%} / {sum(1 - y) / len(y):.2%}")
         
+        # 保存特征列表
+        feature_list_path = os.path.join(DATA_DIR['processed'], 'feature_list.pkl')
+        print(f"保存特征列表到: {feature_list_path}")
+        joblib.dump(feature_cols, feature_list_path)
+        
         # 划分训练集和测试集
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, stratify=y, random_state=MODEL_CONFIG['random_state']
@@ -447,6 +452,14 @@ def train_classification_model(input_df=None, models_to_train=None, balance_data
         # 从文件加载数据
         X_train, X_test, y_train, y_test = load_processed_data()
         df_features = pd.read_csv(os.path.join(DATA_DIR['processed'], DATA_CONFIG['processed_data_file']))
+        
+        # 获取特征列表
+        feature_cols = X_train.columns.tolist()
+        
+        # 保存特征列表
+        feature_list_path = os.path.join(DATA_DIR['processed'], 'feature_list.pkl')
+        print(f"保存特征列表到: {feature_list_path}")
+        joblib.dump(feature_cols, feature_list_path)
     
     # 所有模型的结果
     all_results = {}

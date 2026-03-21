@@ -40,11 +40,15 @@ def main():
     print(f"- 检查点间隔: {checkpoint_interval}个化合物")
     print(f"- 启用大规模下载模式: {large_scale}")
     
-    # 确认下载
-    confirm = input("\n开始下载吗？这可能需要几个小时的时间 (y/n): ").strip().lower()
-    if confirm != 'y':
-        print("下载已取消")
-        return
+    # 自动确认下载（用于自动化流程）
+    confirm = 'y'
+    print("\n自动确认下载，开始获取数据...")
+    
+    # 或者保留手动确认（用于交互模式）
+    # confirm = input("\n开始下载吗？这可能需要几个小时的时间 (y/n): ").strip().lower()
+    # if confirm != 'y':
+    #     print("下载已取消")
+    #     return
     
     # 计算下载时间估计
     estimated_time_hours = (total_compounds / batch_size) * (delay + 2) / 3600  # 每个批次大约需要delay+2秒
