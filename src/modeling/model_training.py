@@ -202,6 +202,10 @@ def evaluate_model(model, scaler, X_test, y_test, model_name: str) -> dict:
     返回:
         dict: 评估指标
     """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    from sklearn.metrics import roc_curve, precision_recall_curve
+    
     print(f"\n正在评估{model_name}模型...")
     
     # 标准化
@@ -234,6 +238,85 @@ def evaluate_model(model, scaler, X_test, y_test, model_name: str) -> dict:
     # 分类报告
     print(f"\n分类报告:")
     print(classification_report(y_test, y_pred))
+    
+    # 可视化
+    print("\n生成模型性能可视化...")
+    
+    # 创建结果目录
+    os.makedirs(RESULTS_DIR['figures'], exist_ok=True)
+    
+    # 设置中文字体支持
+    plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'DejaVu Sans']  # 支持中文
+    plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+    
+    # 1. 混淆矩阵热图
+    plt.figure(figsize=(8, 6))
+    sns.set(font_scale=1.2)  # 调整字体大小
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                xticklabels=['Predicted Inactive', 'Predicted Active'], 
+                yticklabels=['Actual Inactive', 'Actual Active'],
+                cbar_kws={'label': 'Count'})  # 添加颜色条标签
+    plt.xlabel('Predicted Label', fontsize=12, fontweight='bold')
+    plt.ylabel('Actual Label', fontsize=12, fontweight='bold')
+    plt.title(f'{model_name} Confusion Matrix', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    cm_path = os.path.join(RESULTS_DIR['figures'], f'{model_name}_confusion_matrix.png')
+    plt.savefig(cm_path, dpi=300, bbox_inches='tight')  # 确保所有元素都被保存
+    plt.close()
+    print(f"混淆矩阵热图已保存到: {cm_path}")
+    
+    # 2. ROC曲线
+    plt.figure(figsize=(10, 6))
+    sns.set_style("whitegrid")  # 设置网格风格
+    fpr, tpr, _ = roc_curve(y_test, y_pred_prob)
+    plt.plot(fpr, tpr, linewidth=2, label=f'{model_name} (AUC = {metrics["roc_auc"]:.4f})')
+    plt.plot([0, 1], [0, 1], 'k--', linewidth=1, label='Random Guess')
+    plt.xlabel('False Positive Rate (FPR)', fontsize=12, fontweight='bold')
+    plt.ylabel('True Positive Rate (TPR)', fontsize=12, fontweight='bold')
+    plt.title(f'{model_name} ROC Curve', fontsize=14, fontweight='bold')
+    plt.legend(loc='lower right', fontsize=10)
+    plt.grid(True, alpha=0.3, linestyle='--')
+    plt.tight_layout()
+    roc_path = os.path.join(RESULTS_DIR['figures'], f'{model_name}_roc_curve.png')
+    plt.savefig(roc_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"ROC曲线已保存到: {roc_path}")
+    
+    # 3. 精确率-召回率曲线
+    plt.figure(figsize=(10, 6))
+    sns.set_style("whitegrid")
+    precision, recall, _ = precision_recall_curve(y_test, y_pred_prob)
+    plt.plot(recall, precision, linewidth=2, label=f'{model_name} (AUC = {metrics["pr_auc"]:.4f})')
+    # 添加基线（随机猜测）
+    baseline = sum(y_test) / len(y_test)
+    plt.axhline(y=baseline, color='gray', linestyle='--', linewidth=1, label=f'Baseline (P = {baseline:.2f})')
+    plt.xlabel('Recall', fontsize=12, fontweight='bold')
+    plt.ylabel('Precision', fontsize=12, fontweight='bold')
+    plt.title(f'{model_name} Precision-Recall Curve', fontsize=14, fontweight='bold')
+    plt.legend(loc='lower left', fontsize=10)
+    plt.grid(True, alpha=0.3, linestyle='--')
+    plt.tight_layout()
+    pr_path = os.path.join(RESULTS_DIR['figures'], f'{model_name}_pr_curve.png')
+    plt.savefig(pr_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"精确率-召回率曲线已保存到: {pr_path}")
+    
+    # 4. 预测概率分布
+    plt.figure(figsize=(10, 6))
+    sns.set_style("whitegrid")
+    # 使用更专业的颜色和样式
+    sns.histplot(y_pred_prob[y_test == 1], bins=20, kde=True, color='#4CAF50', label='Active Compounds', alpha=0.6, edgecolor='none')
+    sns.histplot(y_pred_prob[y_test == 0], bins=20, kde=True, color='#F44336', label='Inactive Compounds', alpha=0.6, edgecolor='none')
+    plt.xlabel('Predicted Probability', fontsize=12, fontweight='bold')
+    plt.ylabel('Frequency', fontsize=12, fontweight='bold')
+    plt.title(f'{model_name} Predicted Probability Distribution', fontsize=14, fontweight='bold')
+    plt.legend(loc='upper center', fontsize=10)
+    plt.grid(True, alpha=0.3, linestyle='--')
+    plt.tight_layout()
+    prob_path = os.path.join(RESULTS_DIR['figures'], f'{model_name}_probability_distribution.png')
+    plt.savefig(prob_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"预测概率分布图已保存到: {prob_path}")
     
     return metrics, y_pred, y_pred_prob
 
@@ -387,7 +470,59 @@ def save_results(results: dict, results_name: str) -> str:
     return results_path
 
 
-def train_classification_model(input_df=None, models_to_train=None, balance_data: bool = True, cross_val: bool = False) -> dict:
+def evaluate_with_lazypredict(X, y, save_results: bool = True) -> pd.DataFrame:
+    """
+    使用LazyPredict评估多种模型
+    
+    参数:
+        X: 特征数据
+        y: 目标变量
+        save_results: 是否保存结果
+    
+    返回:
+        pd.DataFrame: 模型性能比较结果
+    """
+    try:
+        from lazypredict.Supervised import LazyClassifier
+        from sklearn.model_selection import train_test_split
+        
+        print("\n使用LazyPredict评估多种模型...")
+        
+        # 处理NaN值
+        X = X.fillna(0)
+        
+        # 划分训练集和测试集
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
+        
+        # 使用LazyPredict
+        clf = LazyClassifier(verbose=0, ignore_warnings=True, custom_metric=None)
+        models, predictions = clf.fit(X_train, X_test, y_train, y_test)
+        
+        print("\nLazyPredict模型性能排序:")
+        print(models.head(15))
+        
+        # 保存结果
+        if save_results:
+            lazy_results_path = os.path.join(RESULTS_DIR['models'], 'lazypredict_results.csv')
+            models.to_csv(lazy_results_path)
+            print(f"LazyPredict结果已保存到: {lazy_results_path}")
+            
+            # 保存前10个最佳模型的详细信息
+            top_models = models.head(10)
+            top_models_path = os.path.join(RESULTS_DIR['models'], 'top_models.csv')
+            top_models.to_csv(top_models_path)
+            print(f"前10个最佳模型已保存到: {top_models_path}")
+        
+        return models
+    except ImportError:
+        print("警告: lazypredict库未安装，跳过模型评估")
+        return None
+    except Exception as e:
+        print(f"LazyPredict评估时出错: {e}")
+        return None
+
+
+def train_classification_model(input_df=None, models_to_train=None, balance_data: bool = True, cross_val: bool = False, use_lazypredict: bool = True) -> dict:
     """
     运行完整的模型训练和评估流程
     
@@ -396,6 +531,7 @@ def train_classification_model(input_df=None, models_to_train=None, balance_data
         models_to_train: 要训练的模型名称列表，默认为None（训练所有模型）
         balance_data: 是否处理类不平衡
         cross_val: 是否进行交叉验证
+        use_lazypredict: 是否使用LazyPredict评估多种模型
     
     返回:
         tuple: (models_dict, all_results, df_features)，包含训练好的模型、结果和特征DataFrame
@@ -448,6 +584,10 @@ def train_classification_model(input_df=None, models_to_train=None, balance_data
         print(f"测试集大小: {len(X_test)}")
         print(f"训练集活性比例: {sum(y_train) / len(y_train):.2%}")
         print(f"测试集活性比例: {sum(y_test) / len(y_test):.2%}")
+        
+        # 使用LazyPredict评估多种模型
+        if use_lazypredict:
+            evaluate_with_lazypredict(X, y)
     else:
         # 从文件加载数据
         X_train, X_test, y_train, y_test = load_processed_data()

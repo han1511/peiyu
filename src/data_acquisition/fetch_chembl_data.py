@@ -15,7 +15,43 @@ from tqdm import tqdm
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 # 导入配置
-from src.config import DATA_DIR, DATA_CONFIG, ACTIVITY_CONFIG
+from src.config import DATA_DIR, DATA_CONFIG, ACTIVITY_CONFIG, RESULTS_DIR
+
+
+def activity_label(ic50):
+    """
+    根据IC50值标记化合物活性
+    
+    参数:
+        ic50: IC50值 (nM)
+    
+    返回:
+        str: 活性标签 ('active', 'intermediate', 'inactive')
+    """
+    if ic50 < 1000:
+        return 'active'
+    elif ic50 > 10000:
+        return 'inactive'
+    else:
+        return 'intermediate'
+
+
+def calculate_pic50(ic50):
+    """
+    计算pIC50值
+    
+    参数:
+        ic50: IC50值 (nM)
+    
+    返回:
+        float: pIC50值
+    """
+    # 限制IC50值，避免负的pIC50
+    if ic50 > (10**8):
+        ic50 = 10**8
+    # 转换为M并计算负对数
+    m = ic50 * (10**-9)
+    return -np.log10(m)
 
 
 def fetch_dengue_data(output_dir: str = None, output_file: str = None) -> pd.DataFrame:
@@ -89,10 +125,27 @@ def fetch_dengue_data(output_dir: str = None, output_file: str = None) -> pd.Dat
     # 移除标准值为NaN的行
     df = df.dropna(subset=['standard_value', 'canonical_smiles'])
     
-    # 计算pIC50值
-    df['pIC50'] = -np.log10(df['standard_value'] / 1e9)
+    # 处理SMILES字符串，获取最长分子组件
+    def longest_smiles(smile_string):
+        cpd = str(smile_string).split('.')
+        return max(cpd, key=len)
     
-    # 标记活性化合物 (使用配置中的阈值)
+    df['canonical_smiles'] = df.canonical_smiles.map(longest_smiles)
+    
+    # 异常值处理
+    print("\n异常值分析:")
+    print(df['standard_value'].describe())
+    
+    # 移除异常值（超过5*10^7的IC50值）
+    initial_count = len(df)
+    df = df[df['standard_value'] < 5 * 10**7]
+    print(f"移除异常值后数据量: {len(df)}/{initial_count}")
+    
+    # 计算pIC50值
+    df['pIC50'] = df['standard_value'].map(calculate_pic50)
+    
+    # 标记活性化合物
+    df['activity_class'] = df['standard_value'].map(activity_label)
     df['active'] = (df['pIC50'] >= ACTIVITY_CONFIG['pic50_threshold']).astype(int)
     
     # 移除重复的分子
@@ -104,6 +157,107 @@ def fetch_dengue_data(output_dir: str = None, output_file: str = None) -> pd.Dat
     print(f"预处理后数据量: {len(df)}")
     print(f"活性化合物数量: {df['active'].sum()}")
     print(f"非活性化合物数量: {len(df) - df['active'].sum()}")
+    print(f"活性化合物比例: {df['active'].sum()/len(df):.2%}")
+    
+    # 活性分类统计
+    class_counts = df['activity_class'].value_counts()
+    print("\n活性分类统计:")
+    for cls, count in class_counts.items():
+        print(f"{cls}: {count} ({count/len(df):.2%})")
+    
+    # 数据分布可视化
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    
+    print("\n数据分布分析:")
+    # 创建结果目录
+    os.makedirs(RESULTS_DIR['figures'], exist_ok=True)
+    
+    # 1. IC50值分布（对数刻度）
+    plt.figure(figsize=(10, 6))
+    log_bins = np.logspace(np.log10(df['standard_value'].min()), np.log10(df['standard_value'].max()), 100)
+    plt.hist(df['standard_value'], bins=log_bins, log=True, edgecolor='black')
+    plt.xscale('log')
+    plt.xlabel('IC50 (nM)')
+    plt.ylabel('Frequency (log scale)')
+    plt.title('IC50 Value Distribution')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    ic50_dist_path = os.path.join(RESULTS_DIR['figures'], 'ic50_distribution.png')
+    plt.savefig(ic50_dist_path, dpi=300)
+    plt.close()
+    print(f"IC50分布图已保存到: {ic50_dist_path}")
+    
+    # 2. pIC50值分布
+    plt.figure(figsize=(10, 6))
+    sns.histplot(df['pIC50'], bins=30, kde=True, edgecolor='black')
+    plt.xlabel('pIC50')
+    plt.ylabel('Frequency')
+    plt.title('pIC50 Value Distribution')
+    plt.axvline(x=ACTIVITY_CONFIG['pic50_threshold'], color='red', linestyle='--', label=f"活性阈值: {ACTIVITY_CONFIG['pic50_threshold']}")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    pic50_dist_path = os.path.join(RESULTS_DIR['figures'], 'pic50_distribution.png')
+    plt.savefig(pic50_dist_path, dpi=300)
+    plt.close()
+    print(f"pIC50分布图已保存到: {pic50_dist_path}")
+    
+    # 3. 活性/非活性分布
+    plt.figure(figsize=(8, 6))
+    activity_counts = df['active'].value_counts()
+    colors = ['red', 'green']
+    plt.pie(activity_counts.values, labels=['非活性', '活性'], autopct='%1.1f%%', colors=colors)
+    plt.title('活性/非活性化合物分布')
+    plt.tight_layout()
+    activity_dist_path = os.path.join(RESULTS_DIR['figures'], 'activity_distribution.png')
+    plt.savefig(activity_dist_path, dpi=300)
+    plt.close()
+    print(f"活性分布饼图已保存到: {activity_dist_path}")
+    
+    # 4. 活性分类分布
+    plt.figure(figsize=(8, 6))
+    class_counts = df['activity_class'].value_counts()
+    colors = ['green', 'orange', 'red']
+    plt.pie(class_counts.values, labels=class_counts.index, autopct='%1.1f%%', colors=colors)
+    plt.title('活性分类分布')
+    plt.tight_layout()
+    class_dist_path = os.path.join(RESULTS_DIR['figures'], 'activity_class_distribution.png')
+    plt.savefig(class_dist_path, dpi=300)
+    plt.close()
+    print(f"活性分类分布图已保存到: {class_dist_path}")
+    
+    # 5. IC50 vs pIC50散点图
+    plt.figure(figsize=(10, 6))
+    plt.scatter(df['standard_value'], df['pIC50'], alpha=0.5)
+    plt.xscale('log')
+    plt.xlabel('IC50 (nM)')
+    plt.ylabel('pIC50')
+    plt.title('IC50 vs pIC50 Relationship')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    ic50_pic50_path = os.path.join(RESULTS_DIR['figures'], 'ic50_vs_pic50.png')
+    plt.savefig(ic50_pic50_path, dpi=300)
+    plt.close()
+    print(f"IC50 vs pIC50散点图已保存到: {ic50_pic50_path}")
+    
+    # 6. 活性化合物的pIC50分布
+    plt.figure(figsize=(10, 6))
+    active_df = df[df['active'] == 1]
+    inactive_df = df[df['active'] == 0]
+    sns.histplot(active_df['pIC50'], bins=20, kde=True, color='green', label='Active', alpha=0.6)
+    sns.histplot(inactive_df['pIC50'], bins=20, kde=True, color='red', label='Inactive', alpha=0.6)
+    plt.xlabel('pIC50')
+    plt.ylabel('Frequency')
+    plt.title('pIC50 Distribution by Activity')
+    plt.axvline(x=ACTIVITY_CONFIG['pic50_threshold'], color='blue', linestyle='--', label=f"活性阈值: {ACTIVITY_CONFIG['pic50_threshold']}")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    pic50_activity_path = os.path.join(RESULTS_DIR['figures'], 'pic50_distribution_by_activity.png')
+    plt.savefig(pic50_activity_path, dpi=300)
+    plt.close()
+    print(f"活性化合物pIC50分布图已保存到: {pic50_activity_path}")
     
     # 保存数据
     output_path = os.path.join(output_dir, output_file)

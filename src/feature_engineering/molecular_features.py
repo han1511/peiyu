@@ -155,6 +155,69 @@ def calculate_fingerprints(df, fingerprint_types: list = None) -> pd.DataFrame:
     return result_df
 
 
+def calculate_padel_descriptors(df, smiles_column: str = 'canonical_smiles') -> pd.DataFrame:
+    """
+    使用PADEL计算分子描述符
+    
+    参数:
+        df: 包含SMILES的DataFrame
+        smiles_column: SMILES列名
+    
+    返回:
+        pd.DataFrame: 包含PADEL描述符的DataFrame
+    """
+    try:
+        from padelpy import padeldescriptor
+        import tempfile
+        import os
+        
+        print("正在计算PADEL描述符...")
+        
+        # 创建临时文件
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.smi', delete=False) as f:
+            for i, smiles in enumerate(df[smiles_column]):
+                f.write(f"{i} {smiles}\n")
+            temp_smi = f.name
+        
+        # 定义输出文件
+        temp_csv = temp_smi.replace('.smi', '.csv')
+        
+        # 计算描述符
+        padeldescriptor(
+            mol_dir=temp_smi,
+            d_file=temp_csv,
+            descriptortypes='./descriptors.xml',
+            retainorder=True,
+            fingerprints=True,
+            d_2d=True,
+            d_3d=False
+        )
+        
+        # 读取结果
+        padel_df = pd.read_csv(temp_csv)
+        
+        # 清理临时文件
+        os.unlink(temp_smi)
+        if os.path.exists(temp_csv):
+            os.unlink(temp_csv)
+        
+        # 移除第一列（索引列）
+        if 'Name' in padel_df.columns:
+            padel_df = padel_df.drop('Name', axis=1)
+        
+        # 合并到原始DataFrame
+        result_df = pd.concat([df, padel_df], axis=1)
+        print(f"PADEL描述符计算完成，添加了{len(padel_df.columns)}个特征")
+        
+        return result_df
+    except ImportError:
+        print("警告: padelpy库未安装，跳过PADEL描述符计算")
+        return df
+    except Exception as e:
+        print(f"计算PADEL描述符时出错: {e}")
+        return df
+
+
 def calculate_descriptors(df, desc_types: list = None) -> pd.DataFrame:
     """
     计算分子描述符
@@ -181,6 +244,10 @@ def calculate_descriptors(df, desc_types: list = None) -> pd.DataFrame:
             # 将描述符字典展开为列
             desc_df = pd.DataFrame(descriptors.tolist())
             
+        elif desc_type == 'padel_desc':
+            result_df = calculate_padel_descriptors(result_df)
+            continue
+            
         else:
             print(f"警告: 不支持的描述符类型: {desc_type}")
             continue
@@ -191,7 +258,169 @@ def calculate_descriptors(df, desc_types: list = None) -> pd.DataFrame:
     return result_df
 
 
-def preprocess_features(df, drop_constant: bool = True, drop_correlated: bool = True, corr_threshold: float = 0.95) -> pd.DataFrame:
+def analyze_features(df, target_column: str = 'active') -> dict:
+    """
+    分析特征数据
+    
+    参数:
+        df: 包含特征的DataFrame
+        target_column: 目标列名
+    
+    返回:
+        dict: 特征分析结果
+    """
+    print("正在分析特征数据...")
+    
+    # 获取所有数值特征列
+    feature_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    if target_column in feature_cols:
+        feature_cols.remove(target_column)
+    
+    analysis_results = {
+        'total_features': len(feature_cols),
+        'feature_names': feature_cols,
+        'feature_stats': {}
+    }
+    
+    # 计算每个特征的基本统计信息
+    for col in feature_cols[:50]:  # 限制分析前50个特征
+        analysis_results['feature_stats'][col] = {
+            'mean': float(df[col].mean()),
+            'std': float(df[col].std()),
+            'min': float(df[col].min()),
+            'max': float(df[col].max()),
+            'nan_count': int(df[col].isna().sum())
+        }
+    
+    # 特征相关性分析
+    if len(feature_cols) > 1:
+        print("计算特征相关性...")
+        corr_matrix = df[feature_cols].corr().abs()
+        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+        highly_correlated = [(i, j, round(upper.loc[i, j], 2)) 
+                           for i in upper.columns 
+                           for j in upper.index 
+                           if upper.loc[i, j] > 0.95]
+        analysis_results['highly_correlated'] = highly_correlated
+        print(f"找到{len(highly_correlated)}对高度相关的特征")
+    
+    # 特征重要性分析（基于随机森林）
+    print("分析特征重要性...")
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.model_selection import train_test_split
+    
+    if target_column in df.columns:
+        X = df[feature_cols]
+        y = df[target_column]
+        
+        # 处理NaN值
+        X = X.fillna(0)
+        
+        # 划分训练集
+        X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        # 训练随机森林
+        rf = RandomForestClassifier(n_estimators=100, random_state=42)
+        rf.fit(X_train, y_train)
+        
+        # 获取特征重要性
+        importances = rf.feature_importances_
+        feature_importance = sorted(zip(feature_cols, importances), key=lambda x: x[1], reverse=True)[:20]
+        analysis_results['top_features'] = feature_importance
+        
+        print("Top 10 重要特征:")
+        for feat, imp in feature_importance[:10]:
+            print(f"{feat}: {imp:.4f}")
+    
+    return analysis_results
+
+
+def feature_selection(df, target_column: str = 'active', method: str = 'all', n_features: int = 100) -> pd.DataFrame:
+    """
+    特征选择
+    
+    参数:
+        df: 包含特征和目标变量的DataFrame
+        target_column: 目标列名
+        method: 特征选择方法 ('variance', 'correlation', 'importance', 'rfe', 'all')
+        n_features: 选择的特征数量
+    
+    返回:
+        pd.DataFrame: 包含选择后特征的DataFrame
+    """
+    from sklearn.feature_selection import VarianceThreshold, SelectKBest, f_classif, RFE
+    from sklearn.ensemble import RandomForestClassifier
+    
+    print(f"正在使用{method}方法进行特征选择...")
+    
+    # 获取所有数值特征列，但排除活性标签列
+    exclude_cols = ['active', 'standard_value', 'standard_value_nM', 'pIC50', 'activity_class']
+    feature_cols = [col for col in df.select_dtypes(include=[np.number]).columns.tolist() if col not in exclude_cols]
+    X = df[feature_cols]
+    y = df[target_column]
+    
+    # 处理NaN值
+    X = X.fillna(0)
+    
+    selected_features = feature_cols.copy()
+    
+    # 方差阈值
+    if method in ['variance', 'all']:
+        print("使用方差阈值选择特征...")
+        selector = VarianceThreshold(threshold=0.01)
+        selector.fit(X)
+        var_features = [feature_cols[i] for i, mask in enumerate(selector.get_support()) if mask]
+        print(f"方差阈值选择后特征数: {len(var_features)}")
+        selected_features = var_features
+        X = X[selected_features]
+    
+    # 相关性分析
+    if method in ['correlation', 'all'] and len(selected_features) > 1:
+        print("使用相关性分析选择特征...")
+        corr_matrix = X.corr().abs()
+        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+        to_drop = [column for column in upper.columns if any(upper[column] > 0.95)]
+        corr_features = [col for col in selected_features if col not in to_drop]
+        print(f"相关性分析后特征数: {len(corr_features)}")
+        selected_features = corr_features
+        X = X[selected_features]
+    
+    # 特征重要性
+    if method in ['importance', 'all'] and len(selected_features) > n_features:
+        print("使用特征重要性选择特征...")
+        model = RandomForestClassifier(n_estimators=100, random_state=42)
+        model.fit(X, y)
+        importances = model.feature_importances_
+        feature_importance = sorted(zip(selected_features, importances), key=lambda x: x[1], reverse=True)
+        imp_features = [f[0] for f in feature_importance[:n_features]]
+        print(f"特征重要性选择后特征数: {len(imp_features)}")
+        selected_features = imp_features
+    
+    # 递归特征消除
+    if method in ['rfe', 'all'] and len(selected_features) > n_features:
+        print("使用递归特征消除选择特征...")
+        model = RandomForestClassifier(n_estimators=50, random_state=42)
+        rfe = RFE(estimator=model, n_features_to_select=n_features, step=10)
+        rfe.fit(X, y)
+        rfe_features = [selected_features[i] for i, mask in enumerate(rfe.get_support()) if mask]
+        print(f"递归特征消除后特征数: {len(rfe_features)}")
+        selected_features = rfe_features
+    
+    # 保留原始列
+    result_df = df.copy()
+    # 只保留选择的特征和必要的列
+    keep_cols = ['canonical_smiles', 'molecule_chembl_id', target_column] + selected_features
+    # 确保所有必要的列都存在
+    for col in keep_cols:
+        if col not in result_df.columns:
+            keep_cols.remove(col)
+    result_df = result_df[keep_cols]
+    
+    print(f"最终选择的特征数: {len(selected_features)}")
+    return result_df
+
+
+def preprocess_features(df, drop_constant: bool = True, drop_correlated: bool = True, corr_threshold: float = 0.95, feature_selection_method: str = None, n_features: int = 100) -> pd.DataFrame:
     """
     预处理特征数据
     
@@ -200,6 +429,8 @@ def preprocess_features(df, drop_constant: bool = True, drop_correlated: bool = 
         drop_constant: 是否移除常数特征
         drop_correlated: 是否移除高相关特征
         corr_threshold: 相关系数阈值
+        feature_selection_method: 特征选择方法，None表示不进行特征选择
+        n_features: 选择的特征数量
     
     返回:
         pd.DataFrame: 预处理后的DataFrame
@@ -207,7 +438,7 @@ def preprocess_features(df, drop_constant: bool = True, drop_correlated: bool = 
     result_df = df.copy()
     
     # 获取所有数值特征列，但排除活性标签列
-    exclude_cols = ['active', 'standard_value', 'standard_value_nM']
+    exclude_cols = ['active', 'standard_value', 'standard_value_nM', 'pIC50', 'activity_class']
     feature_cols = [col for col in result_df.select_dtypes(include=[np.number]).columns.tolist() if col not in exclude_cols]
     
     # 移除常数特征
@@ -232,12 +463,18 @@ def preprocess_features(df, drop_constant: bool = True, drop_correlated: bool = 
         print(f"移除的高相关特征数: {len(to_drop)}")
         result_df = result_df.drop(columns=to_drop)
     
+    # 特征选择
+    if feature_selection_method is not None and 'active' in result_df.columns:
+        result_df = feature_selection(result_df, method=feature_selection_method, n_features=n_features)
+    
     return result_df
 
 
 def calculate_features(input_data, output_path: str = None, 
                      smiles_column: str = 'canonical_smiles',
-                     features_to_calculate: list = None) -> pd.DataFrame:
+                     features_to_calculate: list = None,
+                     feature_selection_method: str = None,
+                     n_features: int = 100) -> pd.DataFrame:
     """
     生成分子特征的完整流程
     
@@ -246,6 +483,8 @@ def calculate_features(input_data, output_path: str = None,
         output_path: 输出CSV文件路径
         smiles_column: SMILES字符串所在的列名
         features_to_calculate: 要计算的特征类型列表，默认为None（使用配置中的默认值）
+        feature_selection_method: 特征选择方法，默认为None（不进行特征选择）
+        n_features: 选择的特征数量，默认为100
     
     返回:
         pd.DataFrame: 包含分子特征的DataFrame
@@ -286,7 +525,7 @@ def calculate_features(input_data, output_path: str = None,
         df = calculate_fingerprints(df, fingerprint_types=[ft.capitalize() for ft in fingerprint_types])
     
     # 3. 计算描述符
-    desc_types = [dt for dt in features_to_calculate if dt in ['rdkit_desc']]
+    desc_types = [dt for dt in features_to_calculate if dt in ['rdkit_desc', 'padel_desc']]
     if desc_types:
         df = calculate_descriptors(df, desc_types=desc_types)
     
@@ -307,7 +546,7 @@ def calculate_features(input_data, output_path: str = None,
         print(f"非活性化合物数: {len(df) - df['active'].sum()}")
     
     # 4. 预处理特征
-    df = preprocess_features(df)
+    df = preprocess_features(df, feature_selection_method=feature_selection_method, n_features=n_features)
     
     # 5. 移除分子对象列（无法保存到CSV）
     if 'mol' in df.columns:

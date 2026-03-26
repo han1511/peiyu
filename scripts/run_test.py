@@ -21,7 +21,7 @@ import pandas as pd
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.config import PROJECT_ROOT, DATA_DIR, RESULTS_DIR
-from src.data_acquisition.fetch_chembl_data import fetch_dengue_data
+# from src.data_acquisition.fetch_chembl_data import fetch_dengue_data
 from src.feature_engineering.molecular_features import calculate_features
 from src.modeling.model_training import train_classification_model
 from src.virtual_screening.virtual_screening import screen_compound_library
@@ -104,27 +104,15 @@ def test_virtual_screening(models):
         # 测试load_compound_library函数
         from src.virtual_screening.virtual_screening import load_compound_library
         
-        # 使用简单的示例化合物库进行测试
-        simple_library_path = os.path.join(DATA_DIR['raw'], 'simple_library.smi')
+        # 使用100K化合物数据文件进行测试
+        pubchem_library_path = os.path.join(DATA_DIR['raw'], 'pubchem_100k_compounds.csv')
         
-        logger.info("创建简单的示例化合物库...")
-        # 创建一个简单的示例化合物库（SMI格式）
-        simple_smiles = [
-            'C1=CC=C(C=C1)C(=O)NC2=CC=C(C=C2)Cl',
-            'C1=CC=CC=C1C(=O)N2CCOCC2',
-            'CC(=O)OC1=CC=CC=C1C(=O)O',
-            'CC(=O)N1C(=O)C2=CC=CC=C2C1=O',
-            'CC(=O)N1C(=O)C2=C(C=C(C=C2)Cl)N1'
-        ]
-        # 将SMILES直接写入文件（不带标题行）
-        with open(simple_library_path, 'w') as f:
-            for smiles in simple_smiles:
-                f.write(f"{smiles}\n")
+        logger.info("使用100K化合物数据文件...")
         
         # 测试加载化合物库
-        df = load_compound_library(simple_library_path)
+        df = load_compound_library(pubchem_library_path)
         logger.info(f"成功加载 {len(df)} 个化合物")
-        logger.info(f"化合物ID列: {df['compound_id'].tolist()}")
+        logger.info(f"化合物ID列示例: {df['compound_id'].tolist()[:5]}...")
         
         logger.info("虚拟筛选模块测试通过！")
         return True, None
