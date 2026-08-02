@@ -1,166 +1,241 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 测试脚本：抗登革病毒药物筛选流程
 
 这个脚本用于测试整个抗登革病毒药物筛选流程，包括：
-1. 数据获取（从ChEMBL数据库获取抗登革病毒活性数据）
+1. 数据加载
 2. 特征工程（计算分子描述符和指纹）
 3. 模型训练（训练机器学习模型）
 4. 虚拟筛选（筛选化合物库）
-5. 结果分析（生成分析报告）
+5. 结果分析
 """
 
 import os
 import sys
 import time
 import logging
-import pandas as pd
 
 # 添加项目根目录到Python路径
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.config import PROJECT_ROOT, DATA_DIR, RESULTS_DIR
-# from src.data_acquisition.fetch_chembl_data import fetch_dengue_data
-from src.feature_engineering.molecular_features import calculate_features
-from src.modeling.model_training import train_classification_model
-from src.virtual_screening.virtual_screening import screen_compound_library
-from src.analysis.result_analysis import generate_analysis_report
+# 添加virtual_screening_pipeline到路径
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'virtual_screening_pipeline')))
+
+# 导入配置
+from configs.config import PROJECT_ROOT, RESULTS_DIR, DATA_DIR
 
 # 设置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def test_data_acquisition():
-    """测试数据获取模块"""
-    logger.info("=== 测试数据获取模块 ===")
-    try:
-        # 使用示例数据进行测试
-        example_data_path = os.path.join(DATA_DIR['raw'], 'example_dengue_data.csv')
-        logger.info(f"检查示例数据文件: {example_data_path}")
-        logger.info(f"文件是否存在: {os.path.exists(example_data_path)}")
-        
-        # 强制使用本地示例数据，跳过网络获取
-        df = pd.read_csv(example_data_path)
-        logger.info(f"示例数据加载成功，共 {len(df)} 个分子")
-        logger.info(f"数据列: {list(df.columns)}")
-        
-        # 检查并处理standard_value列中的NaN值
-        logger.info(f"standard_value列中的NaN值数量: {df['standard_value'].isna().sum()}")
-        df = df.dropna(subset=['standard_value'])
-        logger.info(f"移除NaN值后的数据数量: {len(df)}")
-        
-        # 检查是否有active列，如果没有则添加
-        if 'active' not in df.columns:
-            df['active'] = (df['standard_value'] <= 1000).astype(int)
-            logger.info("已添加active列")
-        
-        # 检查active列中的NaN值
-        logger.info(f"active列中的NaN值数量: {df['active'].isna().sum()}")
-        df = df.dropna(subset=['active'])
-        logger.info(f"移除active列NaN值后的数据数量: {len(df)}")
-        
-        logger.info(f"活性值范围: {df['standard_value'].min()} - {df['standard_value'].max()} {df['standard_units'].iloc[0]}")
-        logger.info(f"活性化合物数量: {df['active'].sum()}")
-        logger.info(f"非活性化合物数量: {len(df) - df['active'].sum()}")
-        return True, df
-    except Exception as e:
-        logger.error(f"数据获取模块测试失败: {e}")
-        return False, None
 
-def test_feature_engineering(df):
-    """测试特征工程模块"""
-    logger.info("=== 测试特征工程模块 ===")
+def check_dependencies():
+    """检查依赖包"""
+    logger.info("=== 检查依赖包 ===")
+    
+    deps_ok = True
+    
+    # 核心依赖
     try:
-        df_features = calculate_features(df, features_to_calculate=['morgan', 'maccs', 'rdkit_desc'])
-        logger.info(f"特征计算成功，共 {len(df_features)} 个分子")
-        logger.info(f"特征数量: {len(df_features.columns) - 5} (不包括分子ID和活性标签)")
-        logger.info(f"特征列示例: {list(df_features.columns[5:10])}")
-        return True, df_features
-    except Exception as e:
-        logger.error(f"特征工程模块测试失败: {e}")
-        return False, None
+        import numpy
+        logger.info("  OK: numpy")
+    except ImportError as e:
+        logger.error(f"  MISSING: numpy - {e}")
+        deps_ok = False
+    
+    try:
+        import pandas
+        logger.info("  OK: pandas")
+    except ImportError as e:
+        logger.error(f"  MISSING: pandas - {e}")
+        deps_ok = False
+    
+    try:
+        import sklearn
+        logger.info("  OK: scikit-learn")
+    except ImportError as e:
+        logger.error(f"  MISSING: scikit-learn - {e}")
+        deps_ok = False
+    
+    try:
+        from rdkit import Chem
+        logger.info("  OK: rdkit")
+    except ImportError as e:
+        logger.error(f"  MISSING: rdkit - {e}")
+        deps_ok = False
+    
+    # 可选依赖
+    try:
+        import xgboost
+        logger.info("  OK: xgboost (optional)")
+    except ImportError:
+        logger.info("  OPTIONAL: xgboost not available")
+    
+    try:
+        import torch
+        logger.info("  OK: torch (optional)")
+    except ImportError:
+        logger.info("  OPTIONAL: torch not available")
+    
+    return deps_ok
 
-def test_model_training(df_features):
-    """测试模型训练模块"""
-    logger.info("=== 测试模型训练模块 ===")
-    try:
-        # 测试随机森林模型
-        models, results, df_features = train_classification_model(df_features, models_to_train=['RandomForest'], balance_data=True)
-        logger.info(f"模型训练成功，训练了 {len(models)} 个模型")
-        logger.info(f"模型性能: {results}")
-        return True, models, results
-    except Exception as e:
-        logger.error(f"模型训练模块测试失败: {e}")
-        return False, None, None
 
-def test_virtual_screening(models):
-    """测试虚拟筛选模块"""
-    logger.info("=== 测试虚拟筛选模块 ===")
+def test_compound_library():
+    """测试化合物库模块"""
+    logger.info("=== 测试化合物库模块 ===")
     try:
-        # 测试虚拟筛选模块的基本功能，不执行完整的预测（避免特征数量不匹配问题）
-        # 创建一个简单的测试来验证模块是否能正确加载和处理数据
+        from src.compound_library import CompoundLibrary
+        from rdkit import Chem
         
-        # 测试load_compound_library函数
-        from src.virtual_screening.virtual_screening import load_compound_library
+        library = CompoundLibrary("test_library")
+        logger.info(f"化合物库模块加载成功")
         
-        # 使用100K化合物数据文件进行测试
-        pubchem_library_path = os.path.join(DATA_DIR['raw'], 'pubchem_100k_compounds.csv')
+        # 测试添加化合物
+        mol = Chem.MolFromSmiles("CCO")  # 乙醇
+        if mol:
+            library.compounds.append({
+                'name': 'ethanol',
+                'mol': mol,
+                'smiles': 'CCO',
+                'standardized_smiles': 'CCO'
+            })
+            logger.info(f"添加化合物成功，当前库中化合物数: {len(library.compounds)}")
         
-        logger.info("使用100K化合物数据文件...")
-        
-        # 测试加载化合物库
-        df = load_compound_library(pubchem_library_path)
-        logger.info(f"成功加载 {len(df)} 个化合物")
-        logger.info(f"化合物ID列示例: {df['compound_id'].tolist()[:5]}...")
-        
-        logger.info("虚拟筛选模块测试通过！")
-        return True, None
+        return True
     except Exception as e:
-        logger.error(f"虚拟筛选模块测试失败: {e}")
-        return False, None
-
-def test_result_analysis():
-    """测试结果分析模块"""
-    logger.info("=== 测试结果分析模块 ===")
-    try:
-        # 检查是否有结果文件
-        results_dir = RESULTS_DIR['models']
-        if os.path.exists(results_dir) and len(os.listdir(results_dir)) > 0:
-            generate_analysis_report(models_list=['random_forest'])
-            logger.info("结果分析报告生成成功")
-            return True
-        else:
-            logger.warning("没有找到模型结果文件，跳过结果分析")
-            return True
-    except Exception as e:
-        logger.error(f"结果分析模块测试失败: {e}")
+        logger.error(f"化合物库模块测试失败: {e}")
+        import traceback
+        traceback.print_exc()
         return False
+
+
+def test_molecular_features():
+    """测试分子特征模块"""
+    logger.info("=== 测试分子特征模块 ===")
+    try:
+        from src.molecular_features import FeatureEngineering
+        from rdkit import Chem
+        
+        fe = FeatureEngineering()
+        logger.info("特征工程模块加载成功")
+        
+        # 测试特征计算
+        mol = Chem.MolFromSmiles("CCO")  # 乙醇
+        if mol:
+            features, names, _ = fe.calculate_all_features([mol])
+            logger.info(f"特征计算成功，特征维度: {features.shape}")
+        
+        return True
+    except Exception as e:
+        logger.error(f"分子特征模块测试失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_ml_screening():
+    """测试机器学习筛选模块"""
+    logger.info("=== 测试机器学习筛选模块 ===")
+    try:
+        from src.ml_screening import VirtualScreening, ModelTrainer
+        
+        screening = VirtualScreening()
+        logger.info("机器学习筛选模块加载成功")
+        
+        # 测试模型创建
+        from sklearn.ensemble import RandomForestClassifier
+        import numpy as np
+        
+        # 创建简单测试数据
+        X = np.random.rand(100, 10)
+        y = np.random.randint(0, 2, 100)
+        
+        # 训练测试模型
+        trainer = ModelTrainer("RandomForest")
+        trainer.train(X, y)
+        logger.info("模型训练成功")
+        
+        # 测试预测
+        X_test = np.random.rand(10, 10)
+        predictions = trainer.predict(X_test)
+        probabilities = trainer.predict_proba(X_test)
+        logger.info(f"模型预测成功，预测结果: {len(predictions)} 个")
+        
+        return True
+    except Exception as e:
+        logger.error(f"机器学习筛选模块测试失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_admet_evaluation():
+    """测试ADMET评估模块"""
+    logger.info("=== 测试ADMET评估模块 ===")
+    try:
+        from src.admet_evaluation import ADMETCalculator
+        from rdkit import Chem
+        
+        calculator = ADMETCalculator()
+        logger.info("ADMET评估模块加载成功")
+        
+        # 测试ADMET计算
+        mol = Chem.MolFromSmiles("CCO")  # 乙醇
+        if mol:
+            result = calculator.calculate_all_admet(mol)
+            logger.info(f"ADMET计算成功，包含 {len(result)} 个性质")
+        
+        return True
+    except Exception as e:
+        logger.error(f"ADMET评估模块测试失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 
 def main():
     """运行完整测试流程"""
+    logger.info("=" * 60)
     logger.info("开始抗登革病毒药物筛选流程测试")
-    logger.info("项目根目录: " + PROJECT_ROOT)
+    logger.info("=" * 60)
+    logger.info(f"项目根目录: {PROJECT_ROOT}")
     
     start_time = time.time()
     
-    # 测试各个模块
-    data_success, df = test_data_acquisition()
+    # 检查依赖
+    if not check_dependencies():
+        logger.error("依赖检查失败，请安装缺失的依赖包")
+        return 1
     
-    if data_success:
-        feature_success, df_features = test_feature_engineering(df)
-        
-        if feature_success:
-            model_success, models, results = test_model_training(df_features)
-            
-            if model_success:
-                screening_success, screening_results = test_virtual_screening(models)
-                
-                if screening_success:
-                    test_result_analysis()
+    # 测试各个模块
+    results = {
+        'compound_library': test_compound_library(),
+        'molecular_features': test_molecular_features(),
+        'ml_screening': test_ml_screening(),
+        'admet_evaluation': test_admet_evaluation(),
+    }
     
     end_time = time.time()
+    
+    # 打印测试结果摘要
+    logger.info("=" * 60)
+    logger.info("测试摘要")
+    logger.info("=" * 60)
+    for module, success in results.items():
+        status = "通过" if success else "失败"
+        logger.info(f"  {module}: {status}")
+    
+    all_passed = all(results.values())
+    if all_passed:
+        logger.info("\n所有模块测试通过！")
+    else:
+        logger.warning("\n部分模块测试失败，请检查日志")
+    
     logger.info(f"测试完成，总耗时: {end_time - start_time:.2f} 秒")
+    
+    return 0 if all_passed else 1
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

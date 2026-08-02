@@ -46,6 +46,14 @@ from configs.config import (
     BINDING_AFFINITY_THRESHOLD
 )
 
+try:
+    from rdkit import Chem
+    from rdkit.Chem import Draw
+    HAS_RDKIT = True
+except ImportError:
+    HAS_RDKIT = False
+    warnings.warn("RDKit not available. Molecular visualization will be limited.")
+
 logging.basicConfig(
     level=getattr(logging, LOG_CONFIG["level"]),
     format=LOG_CONFIG["format"]
@@ -479,6 +487,100 @@ class VirtualScreeningReporter:
         self.admet_analyzer = ADMETResultsAnalyzer()
 
         self.pipeline_results = {}
+        self.compound_info = {}  # 存储化合物SMILES信息
+
+    def add_compound_info(self, compound_info: Dict[str, str]) -> None:
+        """
+        添加化合物信息（SMILES等）
+
+        参数:
+            compound_info: 化合物信息字典，key为化合物ID，value为SMILES
+        """
+        self.compound_info.update(compound_info)
+
+    def draw_molecule_structure(self, smiles: str, filename: str, size: Tuple[int, int] = (300, 300)) -> Optional[str]:
+        """
+        绘制分子结构图片
+
+        参数:
+            smiles: SMILES字符串
+            filename: 输出文件名
+            size: 图片大小
+
+        返回:
+            str: 图片路径，如果失败返回None
+        """
+        if not HAS_RDKIT:
+            logger.warning("RDKit not available, cannot draw molecule structure")
+            return None
+
+        try:
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                logger.warning(f"Invalid SMILES: {smiles}")
+                return None
+
+            img_path = self.output_dir / filename
+            img = Draw.MolToImage(mol, size=size)
+            img.save(img_path)
+
+            logger.info(f"Molecule structure saved to {img_path}")
+            return str(img_path)
+        except Exception as e:
+            logger.error(f"Error drawing molecule: {str(e)}")
+            return None
+
+    def draw_top_compounds_grid(self, top_compounds: pd.DataFrame, smiles_col: str = "SMILES", 
+                                title_col: str = "CID", top_n: int = 9) -> Optional[str]:
+        """
+        绘制Top化合物的网格图
+
+        参数:
+            top_compounds: Top化合物DataFrame
+            smiles_col: SMILES列名
+            title_col: 标题列名
+            top_n: 显示前N个化合物（应为完全平方数）
+
+        返回:
+            str: 图片路径，如果失败返回None
+        """
+        if not HAS_RDKIT:
+            logger.warning("RDKit not available, cannot draw molecule grid")
+            return None
+
+        try:
+            mols = []
+            legends = []
+            
+            for _, row in top_compounds.head(top_n).iterrows():
+                smiles = row.get(smiles_col, "")
+                title = str(row.get(title_col, f"Compound {len(mols)+1}"))
+                
+                mol = Chem.MolFromSmiles(smiles)
+                if mol:
+                    mols.append(mol)
+                    legends.append(title)
+
+            if not mols:
+                logger.warning("No valid molecules to draw")
+                return None
+
+            # 计算网格大小
+            grid_size = int(len(mols) ** 0.5)
+            if grid_size * grid_size < len(mols):
+                grid_size += 1
+
+            img_path = self.output_dir / "top_compounds_grid.png"
+            img = Draw.MolsToGridImage(mols, molsPerRow=grid_size, subImgSize=(300, 300), legends=legends)
+            
+            # 使用正确的保存方式
+            img.save(str(img_path))
+
+            logger.info(f"Compound grid saved to {img_path}")
+            return str(img_path)
+        except Exception as e:
+            logger.error(f"Error drawing compound grid: {str(e)}")
+            return None
 
     def generate_summary_report(self,
                              pipeline_results: Dict[str, Any],
@@ -581,6 +683,27 @@ class VirtualScreeningReporter:
             if "overall_assessment" in admet_results.columns:
                 drug_like_count = admet_results["overall_assessment"].str.contains("Good", na=False).sum()
                 reporter.add_text(f"Drug-like Compounds: {drug_like_count}/{len(admet_results)}")
+
+            # 添加分子结构展示
+            reporter.add_title("Top Compound Structures", level=3)
+            reporter.add_text("The following figure shows the chemical structures of the top 9 compounds identified in this screening:")
+            
+            # 绘制Top化合物网格图
+            if "SMILES" in admet_results.columns:
+                grid_path = self.draw_top_compounds_grid(admet_results, smiles_col="SMILES", top_n=9)
+                if grid_path:
+                    reporter.add_figure(grid_path, caption="Figure 1: Chemical structures of top 9 compounds")
+            
+            # 添加Top化合物详细表格（包含SMILES）
+            if "SMILES" in admet_results.columns:
+                # 动态选择存在的列
+                available_cols = []
+                for col in ["SMILES", "predicted_activity", "hia", "solubility", "overall_assessment", "CID", "Score"]:
+                    if col in admet_results.columns:
+                        available_cols.append(col)
+                if available_cols:
+                    top_df = admet_results.head(10)[available_cols]
+                    reporter.add_table(top_df, caption="Table 2: Top 10 Compounds with Properties")
 
         reporter.add_title("Conclusion", level=2)
         reporter.add_text("This virtual screening study identified potential inhibitors for dengue virus {target} protein. "

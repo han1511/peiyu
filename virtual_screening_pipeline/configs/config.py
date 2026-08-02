@@ -124,7 +124,8 @@ DOCKING_CONFIG = {
         "size_z": 22.5
     },
     "energy_range": 3.0,
-    "cpu_cores": -1
+    "cpu_cores": -1,
+    "docking_timeout": 600
 }
 
 # 对接结合能阈值 (kcal/mol)

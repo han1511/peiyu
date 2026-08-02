@@ -1,0 +1,265 @@
+# DrugScreen AI 配置文件
+# 虚拟筛选平台全局配置
+
+project:
+  name: "DrugScreen AI"
+  version: "2.0.0"
+  author: "研究团队"
+  description: "智能药物虚拟筛选平台"
+
+paths:
+  project_root: "auto"  # auto表示自动检测，或指定绝对路径
+  data_dir: "data"
+  results_dir: "results"
+  logs_dir: "results/logs"
+  temp_dir: "temp"
+  cache_dir: ".cache"
+
+targets:
+  NS2A:
+    pdb_id: null
+    uniprot_id: "Q9Y8C8"
+    name: "Dengue virus NS2A protein"
+    function: "Viral replication complex component"
+    notes: "Membrane-associated protein involved in viral replication"
+  
+  NS3:
+    pdb_id: null
+    uniprot_id: "Q9Y8C9"
+    name: "Dengue virus NS3 protease/helicase"
+    function: "Serine protease and RNA helicase"
+    notes: "Essential for viral polyprotein processing and RNA replication"
+  
+  NS5:
+    pdb_id: null
+    uniprot_id: "Q9Y8D0"
+    name: "Dengue virus NS5 methyltransferase/RdRp"
+    function: "RNA-dependent RNA polymerase and methyltransferase"
+    notes: "Core enzyme for viral RNA synthesis"
+  
+  Envelope:
+    pdb_id: null
+    uniprot_id: "Q9Y8C6"
+    name: "Dengue virus envelope glycoprotein"
+    function: "Membrane fusion and cell entry"
+    notes: "Target for neutralizing antibodies and entry inhibitors"
+
+compound_libraries:
+  pubchem_100k:
+    source: "PubChem"
+    path: "data/raw/pubchem_100k_compounds.csv"
+    description: "100K compounds from PubChem"
+    size: 100000
+  
+  zinc_natural:
+    source: "ZINC15"
+    path: "data/compound_libraries/zinc_natural_products.smi"
+    description: "Natural product library from ZINC15"
+    size: null
+  
+  chembl_natural:
+    source: "ChEMBL"
+    path: "data/compound_libraries/chembl_natural_products.smi"
+    description: "Natural products from ChEMBL database"
+    size: null
+  
+  fda_drugs:
+    source: "FDA"
+    path: "data/compound_libraries/fda_approved_drugs.smi"
+    description: "FDA-approved drugs for drug repurposing"
+    size: null
+
+ml_models:
+  XGBoost:
+    n_estimators: 1000
+    max_depth: 10
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    min_child_weight: 1
+    gamma: 0.1
+    reg_alpha: 0.1
+    reg_lambda: 1.0
+    objective: "binary:logistic"
+    eval_metric: "auc"
+    random_state: 42
+    n_jobs: -1
+    tree_method: "hist"
+  
+  RandomForest:
+    n_estimators: 1000
+    max_depth: 15
+    min_samples_split: 5
+    min_samples_leaf: 2
+    max_features: "sqrt"
+    class_weight: "balanced"
+    random_state: 42
+    n_jobs: -1
+  
+  SVM:
+    C: 1.0
+    kernel: "rbf"
+    gamma: "scale"
+    probability: true
+    random_state: 42
+  
+  LogisticRegression:
+    C: 1.0
+    penalty: "l2"
+    solver: "lbfgs"
+    max_iter: 1000
+    class_weight: "balanced"
+    random_state: 42
+
+docking:
+  software: "AutoDock Vina"
+  exhaustiveness: 32
+  num_poses: 20
+  search_space:
+    center_x: null
+    center_y: null
+    center_z: null
+    size_x: 22.5
+    size_y: 22.5
+    size_z: 22.5
+  energy_range: 3.0
+  cpu_cores: -1
+
+binding_affinity_thresholds:
+  strong: -9.0
+  moderate: -7.0
+  weak: -5.0
+
+lipinski_rules:
+  molecular_weight:
+    min: 0
+    max: 500
+  logp:
+    min: -2
+    max: 5
+  h_donors:
+    max: 5
+  h_acceptors:
+    max: 10
+  tpsa:
+    min: 0
+    max: 140
+  num_rotatable_bonds:
+    max: 10
+
+drug_likeness_filters:
+  PAINS:
+    enabled: true
+    max_hits: 0
+  BRENK:
+    enabled: true
+    max_hits: 0
+  ZINC:
+    enabled: false
+
+admet_thresholds:
+  absorption:
+    human_intestinal_absorption:
+      low: 0
+      high: 30
+    caco2_permeability:
+      low: 0
+      high: 8
+  metabolism:
+    cyp3a4_inhibition:
+      threshold: 0.5
+    cyp2c9_inhibition:
+      threshold: 0.5
+  toxicity:
+    ames_toxicity:
+      threshold: 0.5
+    hERG_inhibition:
+      threshold: 0.5
+    LD50:
+      min: 500
+
+data_split:
+  train_ratio: 0.7
+  validation_ratio: 0.15
+  test_ratio: 0.15
+  stratify: true
+  random_state: 42
+
+cross_validation:
+  n_folds: 5
+  stratified: true
+  shuffle: true
+  random_state: 42
+
+feature_engineering:
+  fingerprints:
+    Morgan:
+      radius: 2
+      nBits: 2048
+      use_features: true
+    MACCS:
+      nBits: 167
+    Topological:
+      nBits: 2048
+  descriptors:
+    molecular_weight: {enabled: true}
+    logp: {enabled: true}
+    tpsa: {enabled: true}
+    num_h_donors: {enabled: true}
+    num_h_acceptors: {enabled: true}
+    num_rotatable_bonds: {enabled: true}
+    num_aromatic_rings: {enabled: true}
+    fraction_csp3: {enabled: true}
+    num_heavy_atoms: {enabled: true}
+    balaban_j: {enabled: true}
+    bertz_ct: {enabled: true}
+    hall_kier_alpha: {enabled: true}
+    kappa1: {enabled: true}
+    kappa2: {enabled: true}
+    kappa3: {enabled: true}
+    chi0: {enabled: true}
+    chi1: {enabled: true}
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "results/logs/virtual_screening.log"
+  console_output: true
+  max_bytes: 10485760  # 10MB
+  backup_count: 5
+
+parallel:
+  n_jobs: -1
+  batch_size: 1000
+  verbose: 10
+
+quality_control:
+  enabled: true
+  max_missing_ratio: 0.1
+  outlier_method: "iqr"
+  outlier_threshold: 1.5
+  applicability_domain:
+    method: "leverage"
+    threshold: 0.95
+  
+applicability_domain:
+  method: "leverage"  # leverage, kNN, kernel_density
+  threshold: 0.95
+  k_neighbors: 5
+
+report:
+  formats: ["markdown", "html", "pdf"]
+  include_figures: true
+  include_tables: true
+  precision: 4
+  max_compounds_to_display: 100
+  template: "default"
+  language: "zh"
+
+visualization:
+  style: "publication"
+  dpi: 300
+  figure_format: "png"
+  color_palette: "viridis"
+  font_family: "Arial"
+  figure_size: [10, 8]

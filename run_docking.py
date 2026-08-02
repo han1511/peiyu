@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
 import sys
@@ -9,13 +9,37 @@ sys.path.append('E:\\Python\\dengue_drug_discovery\\virtual_screening_pipeline')
 
 from src.molecular_docking import AutoDockVina, DockingConfig
 
+def find_latest_results():
+    """查找最新的筛选结果目录"""
+    results_dir = "E:\\Python\\dengue_drug_discovery\\results"
+    ns5_dirs = []
+    
+    for item in os.listdir(results_dir):
+        if item.startswith("NS5_") and os.path.isdir(os.path.join(results_dir, item)):
+            ns5_dirs.append(os.path.join(results_dir, item))
+    
+    if not ns5_dirs:
+        print("未找到筛选结果目录")
+        return None
+    
+    # 按修改时间排序，返回最新的
+    ns5_dirs.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+    return ns5_dirs[0]
+
+# 查找最新结果
+latest_dir = find_latest_results()
+if not latest_dir:
+    sys.exit(1)
+
+results_file = os.path.join(latest_dir, "screening_results.json")
+print(f"使用筛选结果: {results_file}")
+
 # 初始化Vina
 vina = AutoDockVina(
     vina_executable="E:\\autodock\\vina.exe"
 )
 
 # 加载筛选结果
-results_file = "E:\\Python\\dengue_drug_discovery\\results\\NS5_20260425_193344\\screening_results.json"
 with open(results_file, 'r') as f:
     screening_results = json.load(f)
 

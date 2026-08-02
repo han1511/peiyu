@@ -62,3 +62,15 @@ DeepVirFinder/
 myenv/
 build/
 dist/
+
+# DrugScreen 项目临时/缓存目录
+_safe_temp/
+.checkpoints/
+chembl_cache/
+docking_work/
+*.npy
+*.npz
+*.pdbqt
+*.sdf
+*.smi
+results/*/

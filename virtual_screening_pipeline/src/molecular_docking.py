@@ -168,17 +168,6 @@ class AutoDockVina:
                       smiles: str,
                       output_file: str,
                       random_seed: int = 42) -> bool:
-        """
-        准备配体文件（SMILES转PDBQT）
-
-        参数:
-            smiles: 配体SMILES
-            output_file: 输出PDBQT文件路径
-            random_seed: 随机种子
-
-        返回:
-            bool: 准备是否成功
-        """
         if not HAS_RDKIT:
             logger.error("RDKit not available")
             return False
@@ -192,21 +181,197 @@ class AutoDockVina:
             mol = Chem.AddHs(mol)
 
             try:
-                params = AllChem.ETKDG(randomSeed=random_seed)
+                try:
+                    params = AllChem.ETKDGv3()
+                except AttributeError:
+                    params = AllChem.ETKDG()
                 AllChem.EmbedMolecule(mol, params)
                 AllChem.UFFOptimizeMolecule(mol)
-            except:
-                logger.warning(f"Could not generate 3D conformation for {smiles}")
+            except Exception as e:
+                logger.warning(f"3D generation failed for {smiles}: {str(e)}")
+                try:
+                    AllChem.EmbedMolecule(mol)
+                    AllChem.UFFOptimizeMolecule(mol)
+                except Exception as e2:
+                    logger.error(f"Failed to generate 3D: {str(e2)}")
+                    return False
 
-            writer = Chem.PDBWriter(output_file)
-            writer.write(mol)
-            writer.close()
+            conf = mol.GetConformer()
+            if conf is None:
+                logger.error(f"No 3D conformation for {smiles}")
+                return False
 
-            logger.debug(f"Prepared ligand: {output_file}")
-            return True
+            # 方法1: 尝试使用 OpenBabel 转换
+            try:
+                sdf_file = output_file.replace('.pdbqt', '.sdf')
+                mol_block = Chem.MolToMolBlock(mol)
+                with open(sdf_file, 'w', encoding='utf-8') as f:
+                    f.write(mol_block)
+
+                result = subprocess.run(
+                    ['obabel', sdf_file, '-O', output_file],
+                    capture_output=True, timeout=30
+                )
+                if result.returncode == 0 and os.path.exists(output_file):
+                    if os.path.exists(sdf_file):
+                        os.remove(sdf_file)
+                    if self._validate_pdbqt(output_file):
+                        logger.debug(f"Prepared ligand via OpenBabel: {output_file}")
+                        return True
+                    else:
+                        logger.warning(f"OpenBabel generated invalid PDBQT, trying fallback")
+            except Exception as e:
+                logger.debug(f"OpenBabel conversion failed: {e}")
+
+            # 方法2: 使用 RDKit 写 PDB 再用 OpenBabel 转换
+            try:
+                pdb_file = output_file.replace('.pdbqt', '.pdb')
+                pdb_block = Chem.MolToPDBBlock(mol)
+                with open(pdb_file, 'w', encoding='utf-8') as f:
+                    f.write(pdb_block)
+
+                result = subprocess.run(
+                    ['obabel', pdb_file, '-O', output_file],
+                    capture_output=True, timeout=30
+                )
+                if result.returncode == 0 and os.path.exists(output_file):
+                    if os.path.exists(pdb_file):
+                        os.remove(pdb_file)
+                    if self._validate_pdbqt(output_file):
+                        logger.debug(f"Prepared ligand via PDB->PDBQT: {output_file}")
+                        return True
+            except Exception as e:
+                logger.debug(f"PDB->PDBQT conversion failed: {e}")
+
+            # 方法3: 手动生成符合AutoDock Vina格式的PDBQT
+            if self._generate_pdbqt_manually(mol, conf, output_file):
+                logger.debug(f"Prepared ligand manually: {output_file}")
+                return True
+
+            logger.error(f"All ligand preparation methods failed for {smiles}")
+            return False
 
         except Exception as e:
             logger.error(f"Error preparing ligand: {str(e)}")
+            return False
+
+    def _validate_pdbqt(self, pdbqt_file: str) -> bool:
+        """验证PDBQT文件格式是否正确"""
+        try:
+            with open(pdbqt_file, 'r', encoding='gbk', errors='replace') as f:
+                content = f.read()
+
+            if 'ROOT' not in content or 'ENDROOT' not in content:
+                return False
+
+            lines = content.strip().split('\n')
+            atom_lines = [l for l in lines if l.startswith('ATOM')]
+
+            if len(atom_lines) == 0:
+                return False
+
+            for line in atom_lines:
+                if len(line) < 50:
+                    return False
+                try:
+                    float(line[30:38])
+                    float(line[38:46])
+                    float(line[46:54])
+                except (ValueError, IndexError):
+                    try:
+                        float(line[31:39])
+                        float(line[39:47])
+                        float(line[47:55])
+                    except (ValueError, IndexError):
+                        return False
+
+            return True
+        except Exception:
+            return False
+
+    def _generate_pdbqt_manually(self, mol, conf, output_file: str) -> bool:
+        """手动生成符合AutoDock Vina格式的PDBQT文件"""
+        try:
+            # 检测可旋转键
+            rotatable_bonds = []
+            for bond in mol.GetBonds():
+                if bond.GetBondType() == Chem.BondType.SINGLE:
+                    a1 = bond.GetBeginAtom()
+                    a2 = bond.GetEndAtom()
+                    if a1.GetAtomicNum() > 1 and a2.GetAtomicNum() > 1:
+                        if not (a1.IsInRing() and a2.IsInRing()):
+                            rotatable_bonds.append(
+                                (bond.GetBeginAtomIdx(), bond.GetEndAtomIdx())
+                            )
+
+            torsdof = len(rotatable_bonds)
+
+            # AutoDock原子类型映射
+            atom_types = {
+                'C': 'C', 'N': 'N', 'O': 'OA', 'S': 'S', 'P': 'P',
+                'F': 'F', 'Cl': 'Cl', 'Br': 'Br', 'I': 'I', 'H': 'HD'
+            }
+
+            # 计算电荷
+            charges = []
+            try:
+                props = AllChem.MMFFGetMoleculeProperties(mol)
+                for i in range(mol.GetNumAtoms()):
+                    charges.append(props.GetMMFFPartialCharge(i))
+            except Exception:
+                for atom in mol.GetAtoms():
+                    sym = atom.GetSymbol()
+                    if sym == 'N':
+                        charges.append(-0.3)
+                    elif sym == 'O':
+                        charges.append(-0.65)
+                    elif sym == 'S':
+                        charges.append(-0.2)
+                    elif sym in ['F', 'Cl', 'Br', 'I']:
+                        charges.append(-0.2)
+                    elif sym == 'P':
+                        charges.append(0.3)
+                    else:
+                        charges.append(0.0)
+
+            # 构建PDBQT内容
+            pdbqt_lines = ["ROOT"]
+
+            for i, atom in enumerate(mol.GetAtoms()):
+                pos = conf.GetAtomPosition(i)
+                atom_symbol = atom.GetSymbol()
+                atom_type = atom_types.get(atom_symbol, atom_symbol)
+
+                # 确定原子名称（PDB格式：1字符元素在列14，2字符在列13-14）
+                if len(atom_symbol) == 1:
+                    atom_name = f" {atom_symbol} "
+                else:
+                    atom_name = f"{atom_symbol}  "
+
+                serial = i + 1
+                charge = charges[i]
+
+                # 严格按照PDBQT列格式：
+                # 1-6: ATOM, 7-11: serial, 13-16: name, 18-20: resname
+                # 22: chain, 23-26: resSeq, 31-38: x, 39-46: y, 47-54: z
+                # 55-60: occupancy, 61-66: tempFactor, 67-76: charge, 77-78: type
+                line = f"ATOM  {serial:5d} {atom_name}LIG X   1    "
+                line += f"{pos.x:8.3f}{pos.y:8.3f}{pos.z:8.3f}"
+                line += "  1.00  0.00    "
+                line += f"{charge:8.4f} {atom_type}"
+
+                pdbqt_lines.append(line)
+
+            pdbqt_lines.append("ENDROOT")
+            pdbqt_lines.append(f"TORSDOF {torsdof}")
+
+            with open(output_file, 'w') as f:
+                f.write('\n'.join(pdbqt_lines))
+
+            return self._validate_pdbqt(output_file)
+
+        except Exception as e:
+            logger.error(f"Manual PDBQT generation failed: {e}")
             return False
 
     def prepare_receptor(self,
@@ -294,11 +459,44 @@ class AutoDockVina:
             return None
 
         try:
+            import tempfile
+            import shutil
+
+            needs_temp = False
+            temp_dir = None
+            use_ligand = ligand_file
+            use_output = output_file
+            use_log = log_file
+            use_receptor = self.receptor_file
+
+            def has_non_ascii(path):
+                if path is None:
+                    return False
+                try:
+                    path.encode('ascii')
+                    return False
+                except UnicodeEncodeError:
+                    return True
+
+            if any(has_non_ascii(p) for p in [ligand_file, output_file, log_file, self.receptor_file]):
+                needs_temp = True
+                ascii_base = os.path.join(os.getcwd(), 'vina_temp')
+                os.makedirs(ascii_base, exist_ok=True)
+                temp_dir = tempfile.mkdtemp(prefix='vina_', dir=ascii_base)
+                use_ligand = os.path.join(temp_dir, 'ligand.pdbqt')
+                use_output = os.path.join(temp_dir, 'result.pdbqt')
+                use_receptor = os.path.join(temp_dir, 'receptor.pdbqt')
+                if log_file:
+                    use_log = os.path.join(temp_dir, 'log.txt')
+
+                shutil.copy2(ligand_file, use_ligand)
+                shutil.copy2(self.receptor_file, use_receptor)
+
             cmd = [
                 self.vina_executable,
-                "--receptor", self.receptor_file,
-                "--ligand", ligand_file,
-                "--out", output_file,
+                "--receptor", use_receptor,
+                "--ligand", use_ligand,
+                "--out", use_output,
                 "--exhaustiveness", str(self.config.config.get("exhaustiveness", 32)),
                 "--num_modes", str(self.config.config.get("num_poses", 20)),
                 "--energy_range", str(self.config.config.get("energy_range", 3.0))
@@ -314,26 +512,43 @@ class AutoDockVina:
                     "--size_y", str(search_space.get("size_y", 22.5)),
                     "--size_z", str(search_space.get("size_z", 22.5))
                 ])
+            else:
+                logger.warning("No binding site specified! Vina will use the entire receptor as search space.")
 
-            if log_file:
-                cmd.extend(["--log", log_file])
+            if use_log:
+                cmd.extend(["--log", use_log])
+
+            timeout = self.config.config.get("docking_timeout", 600)
 
             result = subprocess.run(
                 cmd,
                 capture_output=True,
-                text=True,
-                timeout=300
+                timeout=timeout
             )
+
+            stdout_text = result.stdout.decode('gbk', errors='replace') if result.stdout else ""
+            stderr_text = result.stderr.decode('gbk', errors='replace') if result.stderr else ""
+
+            if needs_temp and temp_dir and os.path.exists(use_output):
+                shutil.copy2(use_output, output_file)
+                if log_file and os.path.exists(use_log):
+                    shutil.copy2(use_log, log_file)
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
             if result.returncode == 0:
                 logger.debug(f"Docking completed: {ligand_file}")
-                return self._parse_vina_output(result.stdout)
+                parsed = self._parse_vina_output(stdout_text)
+                if parsed is None or parsed.get("best_affinity") is None:
+                    logger.warning(f"Docking produced no valid results for {ligand_file}")
+                    return parsed
+                return parsed
             else:
-                logger.error(f"Docking failed: {result.stderr}")
+                error_msg = stderr_text.strip() or stdout_text.strip()
+                logger.error(f"Docking failed: {error_msg}")
                 return None
 
         except subprocess.TimeoutExpired:
-            logger.error("Docking timeout")
+            logger.error(f"Docking timeout after {self.config.config.get('docking_timeout', 600)}s: {ligand_file}")
             return None
         except Exception as e:
             logger.error(f"Error during docking: {str(e)}")
@@ -347,6 +562,9 @@ class AutoDockVina:
             "best_affinity": None
         }
 
+        if not output or not output.strip():
+            return results
+
         lines = output.split("\n")
         mode_started = False
         current_mode = {}
@@ -354,11 +572,14 @@ class AutoDockVina:
         for line in lines:
             line = line.strip()
 
+            if not line:
+                continue
+
             if line.startswith("-----+"):
                 mode_started = True
                 continue
 
-            if mode_started and line and not line.startswith("Writing"):
+            if mode_started and not line.startswith("Writing"):
                 parts = line.split()
                 if len(parts) >= 4 and parts[0].isdigit():
                     try:
@@ -380,7 +601,7 @@ class AutoDockVina:
                             results["best_affinity"] = affinity
                             results["best_mode"] = current_mode
 
-                    except ValueError:
+                    except (ValueError, IndexError):
                         continue
 
         return results

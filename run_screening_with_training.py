@@ -150,6 +150,15 @@ def screen_compounds(library, models_info):
     try:
         best_model_name = models_info['train_results'].get('best_model', 'RandomForest')
         print(f"使用最佳模型: {best_model_name}")
+        
+        # 检查模型是否存在
+        if best_model_name not in screening.trained_models:
+            raise ValueError(f"模型 {best_model_name} 不存在")
+
+        # 检查特征维度是否匹配
+        trainer = screening.trained_models[best_model_name]
+        if hasattr(trainer, 'scaler') and features.shape[1] != trainer.scaler.mean_.shape[0]:
+            raise ValueError(f"特征维度不匹配: 模型期望 {trainer.scaler.mean_.shape[0]} 个特征，实际 {features.shape[1]} 个")
 
         results = screening.screen_compounds(
             features,
@@ -158,24 +167,32 @@ def screen_compounds(library, models_info):
             probability_threshold=0.5
         )
 
+        # 检查结果是否有效
+        if not results.get('success', False):
+            raise ValueError(f"筛选失败: {results.get('error', '未知错误')}")
+
         predictions = results.get('predictions', [])
         probabilities = results.get('probabilities', [])
 
         if probabilities is not None and len(probabilities) > 0:
-            if isinstance(probabilities, np.ndarray) and probabilities.ndim > 1 and probabilities.shape[1] > 1:
-                scores = probabilities[:, 1]
+            probs_array = np.array(probabilities)
+            if probs_array.ndim > 1 and probs_array.shape[1] > 1:
+                scores = probs_array[:, 1]
             else:
-                scores = np.array(probabilities).astype(float)
+                scores = probs_array.astype(float)
         else:
             scores = np.array(predictions).astype(float)
 
         print(f"  预测完成: {len(scores)} 个化合物")
+        print(f"  分数范围: [{np.min(scores):.4f}, {np.max(scores):.4f}]")
+        print(f"  预测活性: {int(np.sum(scores >= 0.5))}/{len(scores)}")
 
     except Exception as e:
-        print(f"  预测出错: {e}")
+        print(f"  ❌ 预测出错: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
-        scores = np.mean(features[:, :50], axis=1)
+        print("  ⚠️ 无法继续筛选，返回None")
+        return None
 
     top_indices = np.argsort(scores)[::-1][:100]
 
@@ -282,6 +299,7 @@ def main():
                 result = evaluator.calculate_all_admet(comp['mol'])
                 result['CID'] = comp.get('CID', 0)
                 result['Score'] = screening_results['scores'][i] if screening_results and i < len(screening_results['scores']) else 0
+                result['SMILES'] = Chem.MolToSmiles(comp['mol'])
                 admet_results.append(result)
             except Exception as e:
                 print(f"  ADMET评估错误: {e}")
